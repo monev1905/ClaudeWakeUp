@@ -6,14 +6,10 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"io"
 	"log"
 	"os"
-	"os/exec"
 	"os/signal"
-	"path/filepath"
 	"runtime"
-	"strings"
 	"time"
 )
 
@@ -58,17 +54,25 @@ func main() {
 	printBanner(logFile)
 	logger.Printf("Application started (local time: %s)", time.Now().Format(time.RFC3339))
 
-	if err := checkClaudeAvailable(); err != nil {
+	claudePath, err := resolveClaudeCLI()
+	if err != nil {
 		logger.Printf("ERROR: %v", err)
-		fmt.Println("\nClaude CLI was not found. Install/login to Claude Code, make sure the")
-		fmt.Println("'claude' command works in Command Prompt, and then start this app again.")
+		fmt.Println("\nA trusted Claude CLI installation was not found. Install/login to Claude")
+		fmt.Println("Code, make sure 'claude' works in Command Prompt, and start this app again.")
 		pauseOnWindows()
 		os.Exit(1)
 	}
+	workDir, err := secureWorkDirectory()
+	if err != nil {
+		logger.Printf("ERROR: cannot create the isolated work directory: %v", err)
+		pauseOnWindows()
+		os.Exit(1)
+	}
+	logger.Println("Security checks passed; Claude CLI resolved outside the application directory")
 
 	if *testOnly {
 		logger.Println("Test mode: running wake-up command now")
-		if err := runWakeUp(logger); err != nil {
+		if err := runWakeUp(claudePath, workDir); err != nil {
 			logger.Printf("TEST FAILED: %v", err)
 			pauseOnWindows()
 			os.Exit(1)
@@ -85,7 +89,7 @@ func main() {
 	fmt.Printf("Next wake-up: %s\n", next.Format("02 Jan 2006 15:04 MST"))
 	logger.Printf("Next wake-up: %s", next.Format(time.RFC1123))
 
-	if err := runScheduler(ctx, logger, wakeUpTimes); err != nil && !errors.Is(err, context.Canceled) {
+	if err := runScheduler(ctx, logger, wakeUpTimes, claudePath, workDir); err != nil && !errors.Is(err, context.Canceled) {
 		logger.Printf("Scheduler stopped with an error: %v", err)
 		pauseOnWindows()
 		os.Exit(1)
@@ -93,7 +97,7 @@ func main() {
 	logger.Println("Application stopped")
 }
 
-func runScheduler(ctx context.Context, logger *log.Logger, schedule []clockTime) error {
+func runScheduler(ctx context.Context, logger *log.Logger, schedule []clockTime, claudePath, workDir string) error {
 	ticker := time.NewTicker(pollInterval)
 	defer ticker.Stop()
 
@@ -112,7 +116,7 @@ func runScheduler(ctx context.Context, logger *log.Logger, schedule []clockTime)
 				if slot != lastSlot {
 					lastSlot = slot
 					logger.Printf("Scheduled wake-up started for %s", slot)
-					if err := runWakeUp(logger); err != nil {
+					if err := runWakeUp(claudePath, workDir); err != nil {
 						logger.Printf("Wake-up FAILED: %v", err)
 					} else {
 						logger.Println("Wake-up completed successfully")
@@ -132,51 +136,36 @@ func runScheduler(ctx context.Context, logger *log.Logger, schedule []clockTime)
 	}
 }
 
-func runWakeUp(logger *log.Logger) error {
+func runWakeUp(claudePath, workDir string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), commandTimeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "cmd.exe", "/D", "/S", "/C", `claude -p "wake up"`)
-	output, err := cmd.CombinedOutput()
-	cleanOutput := strings.TrimSpace(string(output))
-	if cleanOutput != "" {
-		logger.Printf("Claude output:\n%s", cleanOutput)
+	cmd, err := newClaudeCommand(ctx, claudePath, claudeArguments())
+	if err != nil {
+		return err
 	}
+	cmd.Dir = workDir
+	cmd.Stdout = nil
+	cmd.Stderr = nil
+	err = cmd.Run()
 	if ctx.Err() == context.DeadlineExceeded {
 		return fmt.Errorf("Claude command timed out after %s", commandTimeout)
 	}
 	if err != nil {
-		return fmt.Errorf("Claude command returned an error: %w", err)
+		return fmt.Errorf("Claude command failed (%v); run 'claude -p \"wake up\"' manually for details", err)
 	}
 	return nil
 }
 
-func checkClaudeAvailable() error {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, "cmd.exe", "/D", "/C", "where claude")
-	if output, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("the 'claude' command is not available in PATH (%s)", strings.TrimSpace(string(output)))
+func claudeArguments() []string {
+	return []string{
+		"-p", "wake up",
+		"--tools", "",
+		"--max-turns", "1",
+		"--permission-mode", "plan",
+		"--setting-sources", "",
+		"--strict-mcp-config",
 	}
-	return nil
-}
-
-func newLogger() (*log.Logger, string, func(), error) {
-	configDir, err := os.UserConfigDir()
-	if err != nil {
-		return nil, "", nil, err
-	}
-	logDir := filepath.Join(configDir, "ClaudeWakeUp")
-	if err := os.MkdirAll(logDir, 0o755); err != nil {
-		return nil, "", nil, err
-	}
-	logPath := filepath.Join(logDir, "ClaudeWakeUp.log")
-	file, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
-	if err != nil {
-		return nil, "", nil, err
-	}
-	writer := io.MultiWriter(os.Stdout, file)
-	return log.New(writer, "", log.Ldate|log.Ltime), logPath, func() { _ = file.Close() }, nil
 }
 
 func printBanner(logFile string) {
