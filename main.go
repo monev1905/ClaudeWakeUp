@@ -15,9 +15,11 @@ import (
 
 const (
 	appName        = "Claude WakeUp"
-	commandTimeout = 10 * time.Minute
+	commandTimeout = 2 * time.Minute
 	pollInterval   = 5 * time.Second
 )
+
+var wakeUpRetryDelays = []time.Duration{0, 30 * time.Second, 60 * time.Second}
 
 var wakeUpTimes = []clockTime{
 	{hour: 5, minute: 30},
@@ -57,7 +59,7 @@ func main() {
 	claudePath, err := resolveClaudeCLI()
 	if err != nil {
 		logger.Printf("ERROR: %v", err)
-		fmt.Println("\nA trusted Claude CLI installation was not found. Install/login to Claude")
+		fmt.Println("\nA suitable Claude CLI installation was not found. Install/login to Claude")
 		fmt.Println("Code, make sure 'claude' works in Command Prompt, and start this app again.")
 		pauseOnWindows()
 		os.Exit(1)
@@ -68,11 +70,19 @@ func main() {
 		pauseOnWindows()
 		os.Exit(1)
 	}
+	if err := validateClaudeCapabilities(claudePath, workDir); err != nil {
+		logger.Printf("ERROR: %v", err)
+		fmt.Println("\nClaude Code does not support the security options required by this app.")
+		fmt.Println("Run 'claude update' and start Claude WakeUp again.")
+		pauseOnWindows()
+		os.Exit(1)
+	}
+	fmt.Printf("Claude CLI: %s\n", claudePath)
 	logger.Println("Security checks passed; Claude CLI resolved outside the application directory")
 
 	if *testOnly {
 		logger.Println("Test mode: running wake-up command now")
-		if err := runWakeUp(claudePath, workDir); err != nil {
+		if err := runWakeUpAttempt(context.Background(), claudePath, workDir); err != nil {
 			logger.Printf("TEST FAILED: %v", err)
 			pauseOnWindows()
 			os.Exit(1)
@@ -116,8 +126,10 @@ func runScheduler(ctx context.Context, logger *log.Logger, schedule []clockTime,
 				if slot != lastSlot {
 					lastSlot = slot
 					logger.Printf("Scheduled wake-up started for %s", slot)
-					if err := runWakeUp(claudePath, workDir); err != nil {
-						logger.Printf("Wake-up FAILED: %v", err)
+					if err := runWakeUpWithRetry(ctx, logger, claudePath, workDir); err != nil {
+						if !errors.Is(err, context.Canceled) {
+							logger.Printf("Wake-up FAILED after %d attempts: %v", len(wakeUpRetryDelays), err)
+						}
 					} else {
 						logger.Println("Wake-up completed successfully")
 					}
@@ -136,8 +148,21 @@ func runScheduler(ctx context.Context, logger *log.Logger, schedule []clockTime,
 	}
 }
 
-func runWakeUp(claudePath, workDir string) error {
-	ctx, cancel := context.WithTimeout(context.Background(), commandTimeout)
+func runWakeUpWithRetry(ctx context.Context, logger *log.Logger, claudePath, workDir string) error {
+	return retryWithDelays(ctx, wakeUpRetryDelays, func(attempt int) error {
+		if attempt > 1 {
+			logger.Printf("Wake-up retry %d of %d", attempt, len(wakeUpRetryDelays))
+		}
+		err := runWakeUpAttempt(ctx, claudePath, workDir)
+		if err != nil && attempt < len(wakeUpRetryDelays) && ctx.Err() == nil {
+			logger.Printf("Wake-up attempt %d failed: %v", attempt, err)
+		}
+		return err
+	})
+}
+
+func runWakeUpAttempt(parent context.Context, claudePath, workDir string) error {
+	ctx, cancel := context.WithTimeout(parent, commandTimeout)
 	defer cancel()
 
 	cmd, err := newClaudeCommand(ctx, claudePath, claudeArguments())
@@ -160,6 +185,10 @@ func runWakeUp(claudePath, workDir string) error {
 func claudeArguments() []string {
 	return []string{
 		"-p", "wake up",
+		"--safe-mode",
+		"--no-session-persistence",
+		"--disable-slash-commands",
+		"--no-chrome",
 		"--tools", "",
 		"--max-turns", "1",
 		"--permission-mode", "plan",

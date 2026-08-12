@@ -2,6 +2,8 @@
 
 Claude WakeUp is a small Windows application that sends a `wake up` prompt through the locally installed Claude Code CLI at **05:30, 10:30, 15:30, and 20:30**. It uses the computer's local date, time, and time zone. The 01:30 trigger is intentionally skipped.
 
+The purpose is to start five-hour Claude usage windows ahead of the workday while keeping 10:30 as the fixed daytime anchor. The resulting fixed schedule has three five-hour gaps and one intentional nine-hour overnight gap.
+
 ## Quick start on Windows
 
 Clone the repository and open its directory:
@@ -18,7 +20,7 @@ Keep the application window open while you want the schedule to remain active. C
 ## Requirements and authentication
 
 - Windows 10 or newer.
-- Claude Code must be installed, current, and available through an absolute directory in the Windows `PATH`.
+- Claude Code must be installed, current, and available through an absolute directory in the Windows `PATH`. Claude WakeUp verifies the required security flags at startup and asks the user to update Claude Code if any are unavailable.
 - Claude Code must already be authenticated for the current Windows user.
 - This project contains no API keys, access tokens, passwords, or other credentials.
 - The application does not read or store credentials. Authentication and network communication are delegated entirely to the locally installed Claude Code CLI.
@@ -28,11 +30,14 @@ If Claude Code is unavailable or not authenticated, the wake-up command fails an
 ## Security design
 
 - Claude Code is resolved to an absolute path before it is started.
-- Relative `PATH` entries and copies of `claude.exe`, `claude.cmd`, or `claude.bat` in the application/project directory are rejected.
+- Relative `PATH` entries and copies of `claude.exe`, `claude.cmd`, or `claude.bat` anywhere under the application/project tree are rejected.
+- The resolved absolute Claude CLI path is displayed at startup for inspection. An absolute path reduces command-search ambiguity but does not prove publisher identity.
 - Windows batch-based Claude installations are launched through the trusted command interpreter in the Windows system directory.
 - Claude runs from an isolated empty directory under `%APPDATA%\ClaudeWakeUp\workspace`, not from the cloned repository.
-- The request uses `--tools ""`, `--max-turns 1`, `--permission-mode plan`, `--setting-sources ""`, and `--strict-mcp-config`. This prevents the wake-up prompt from using tools or loading user/project settings and MCP servers.
-- Claude's response is discarded. Only timestamps and success/failure status are logged.
+- The request uses `--safe-mode`, `--no-session-persistence`, `--disable-slash-commands`, `--no-chrome`, `--tools ""`, `--max-turns 1`, `--permission-mode plan`, `--setting-sources ""`, and `--strict-mcp-config`. This disables customizations, tools, skills, Chrome integration, settings, and MCP servers for the scheduled prompt.
+- Claude's response is discarded and the one-off session is not persisted. Only timestamps and success/failure status are logged.
+- A failed scheduled request is retried after 30 seconds and then after another 60 seconds. Successful requests are never repeated.
+- Each attempt has a two-minute timeout. On Windows, cancellation attempts to terminate the complete Claude process tree.
 - The log is capped at 1 MiB and is stored at `%APPDATA%\ClaudeWakeUp\ClaudeWakeUp.log`.
 - The application does not request administrator privileges, open ports, install a service, create a scheduled task, modify the Registry, or add itself to Windows Startup.
 - Only one copy can run for each signed-in Windows session.
@@ -41,14 +46,20 @@ These protections reduce accidental command hijacking and project-level configur
 
 ## Verify the executable
 
-The expected SHA-256 checksum is published in `dist\SHA256SUMS.txt`. Verify it from the repository root:
+The expected SHA-256 checksum for the repository copy is published in `dist\SHA256SUMS.txt`. Verify it from the repository root:
 
 ```cmd
 certutil -hashfile dist\ClaudeWakeUp.exe SHA256
 type dist\SHA256SUMS.txt
 ```
 
-The two hashes must match. The prebuilt executable is currently unsigned, so Windows SmartScreen may display a warning. Users requiring stronger provenance should review the source and build it locally.
+The two hashes must match. Tagged GitHub Releases are built by GitHub Actions and include a GitHub artifact attestation. Verify a downloaded release executable with GitHub CLI:
+
+```cmd
+gh attestation verify ClaudeWakeUp.exe --repo monev1905/ClaudeWakeUp
+```
+
+The executable is currently not Authenticode-signed, so Windows SmartScreen may display a warning. Users requiring stronger assurance should verify the release attestation or review the source and build locally.
 
 ## Test immediately
 
@@ -74,5 +85,7 @@ Install Go 1.26.5 or newer and run `build-windows.bat`. The executable is create
 ## Important
 
 This application only sends a Claude request at the configured times. It cannot bypass, modify, or forcibly reset limits imposed by Anthropic. Each request can count toward the user's Claude usage allowance.
+
+The five-hour reset behavior is controlled by Anthropic. Confirm after initial setup that Claude's usage page reports the expected reset times for the account.
 
 See [SECURITY.md](SECURITY.md) for security reporting and distribution guidance.

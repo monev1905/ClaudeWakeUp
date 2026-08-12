@@ -12,6 +12,7 @@ Do not include credentials, session data, personal paths, or sensitive log conte
 
 - Obtain the project only from `https://github.com/monev1905/ClaudeWakeUp`.
 - Verify `dist\ClaudeWakeUp.exe` against `dist\SHA256SUMS.txt` before running it.
+- Prefer tagged GitHub Release artifacts and verify their provenance with `gh attestation verify ClaudeWakeUp.exe --repo monev1905/ClaudeWakeUp`.
 - The prebuilt executable is not currently code-signed. Windows can therefore verify its checksum, but not a publisher identity.
 - For the strongest assurance, inspect the source and build the executable locally with the documented Go version.
 - Never run Claude WakeUp as Administrator. It is designed to run with normal user privileges.
@@ -24,11 +25,11 @@ The child process inherits the current user's environment because Claude install
 
 ## Security boundaries
 
-The application reduces command-search, project-configuration, tool-use, MCP, output-retention, and unbounded-log risks. It does not protect a user from:
+The application reduces command-search, project-configuration, tool-use, MCP, Chrome integration, session/output-retention, orphaned-process, and unbounded-log risks. It does not protect a user from:
 
 - an already compromised Windows account;
 - a malicious or compromised system-wide Claude Code installation;
 - malicious changes accepted into the repository;
 - compromise of the repository owner or distribution platform;
-- user-created Claude hooks or policies enforced outside the setting sources disabled by the application;
+- administrator-managed Claude policies, which safe mode intentionally cannot bypass;
 - risks inherent in sending the fixed prompt to the user's configured Claude service.

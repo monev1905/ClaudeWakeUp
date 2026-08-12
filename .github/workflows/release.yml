@@ -1,0 +1,50 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Test
+        run: go test -race -count=1 ./...
+
+      - name: Build release
+        run: |
+          mkdir -p release
+          GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -buildvcs=false -trimpath -ldflags='-s -w' -o release/ClaudeWakeUp.exe .
+          cd release
+          sha256sum ClaudeWakeUp.exe > SHA256SUMS.txt
+
+      - name: Attest release executable
+        uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26 # v4.1.0
+        with:
+          subject-path: release/ClaudeWakeUp.exe
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            release/ClaudeWakeUp.exe \
+            release/SHA256SUMS.txt \
+            --verify-tag \
+            --generate-notes \
+            --title "Claude WakeUp $GITHUB_REF_NAME"

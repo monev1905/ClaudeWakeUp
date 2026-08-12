@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test-and-verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Test
+        run: go test -race -count=1 ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Build Windows executable
+        run: |
+          mkdir -p build
+          GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -buildvcs=false -trimpath -ldflags='-s -w' -o build/ClaudeWakeUp.exe .
+
+      - name: Verify committed release artifact
+        run: |
+          cmp build/ClaudeWakeUp.exe dist/ClaudeWakeUp.exe
+          sha256sum --check dist/SHA256SUMS.txt

@@ -1,1 +1,1 @@
-991b828cb1ca22e7eb3570c38782d6091d6455dc2ad7b2a48376fea252d84772  dist/ClaudeWakeUp.exe
+33a7c1e4c53cfa026395a32c6d3a50168dc4a71a19014eae9492e73c6e96fcd2  dist/ClaudeWakeUp.exe

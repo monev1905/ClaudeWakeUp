@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 )
 
 func resolveClaudeCLI() (string, error) {
@@ -21,23 +22,31 @@ func resolveClaudeCLI() (string, error) {
 		return "", fmt.Errorf("cannot determine the application directory: %w", err)
 	}
 
-	blocked := []string{cwd, filepath.Dir(executable)}
-	if strings.EqualFold(filepath.Base(filepath.Dir(executable)), "dist") {
-		blocked = append(blocked, filepath.Dir(filepath.Dir(executable)))
+	appDir := filepath.Dir(executable)
+	blockedExact := []string{cwd}
+	blockedTrees := []string{appDir}
+	if strings.EqualFold(filepath.Base(appDir), "dist") {
+		blockedTrees = append(blockedTrees, filepath.Dir(appDir))
 	}
 
-	path, err := findClaudeCLI(os.Getenv("PATH"), executableExtensions(), blocked)
+	path, err := findClaudeCLI(os.Getenv("PATH"), executableExtensions(), blockedExact, blockedTrees)
 	if err != nil {
 		return "", err
 	}
 	return path, nil
 }
 
-func findClaudeCLI(pathValue string, extensions, blockedDirectories []string) (string, error) {
-	blocked := make([]string, 0, len(blockedDirectories))
+func findClaudeCLI(pathValue string, extensions, blockedDirectories, blockedTrees []string) (string, error) {
+	blockedExact := make([]string, 0, len(blockedDirectories))
 	for _, dir := range blockedDirectories {
 		if normalized, err := normalizeDirectory(dir); err == nil {
-			blocked = append(blocked, normalized)
+			blockedExact = append(blockedExact, normalized)
+		}
+	}
+	blockedRoots := make([]string, 0, len(blockedTrees))
+	for _, dir := range blockedTrees {
+		if normalized, err := normalizeDirectory(dir); err == nil {
+			blockedRoots = append(blockedRoots, normalized)
 		}
 	}
 
@@ -47,7 +56,7 @@ func findClaudeCLI(pathValue string, extensions, blockedDirectories []string) (s
 			continue
 		}
 		dir, err := normalizeDirectory(entry)
-		if err != nil || directoryIsBlocked(dir, blocked) {
+		if err != nil || directoryIsBlocked(dir, blockedExact, blockedRoots) {
 			continue
 		}
 
@@ -57,7 +66,15 @@ func findClaudeCLI(pathValue string, extensions, blockedDirectories []string) (s
 			if err != nil || info.IsDir() {
 				continue
 			}
-			absolute, err := filepath.Abs(candidate)
+			resolvedCandidate := candidate
+			if evaluated, evalErr := filepath.EvalSymlinks(candidate); evalErr == nil {
+				resolvedCandidate = evaluated
+			}
+			resolvedDir, err := normalizeDirectory(filepath.Dir(resolvedCandidate))
+			if err != nil || directoryIsBlocked(resolvedDir, blockedExact, blockedRoots) {
+				continue
+			}
+			absolute, err := filepath.Abs(resolvedCandidate)
 			if err != nil {
 				continue
 			}
@@ -65,7 +82,7 @@ func findClaudeCLI(pathValue string, extensions, blockedDirectories []string) (s
 		}
 	}
 
-	return "", errors.New("Claude CLI was not found in a trusted absolute PATH directory")
+	return "", errors.New("Claude CLI was not found in an absolute PATH directory outside the application/project tree")
 }
 
 func executableExtensions() []string {
@@ -108,13 +125,26 @@ func normalizeDirectory(dir string) (string, error) {
 	return filepath.Clean(absolute), nil
 }
 
-func directoryIsBlocked(directory string, blocked []string) bool {
-	for _, item := range blocked {
+func directoryIsBlocked(directory string, blockedExact, blockedTrees []string) bool {
+	for _, item := range blockedExact {
 		if pathsEqual(directory, item) {
 			return true
 		}
 	}
+	for _, root := range blockedTrees {
+		if pathIsWithin(directory, root) {
+			return true
+		}
+	}
 	return false
+}
+
+func pathIsWithin(path, root string) bool {
+	relative, err := filepath.Rel(root, path)
+	if err != nil || filepath.IsAbs(relative) {
+		return false
+	}
+	return relative == "." || (relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)))
 }
 
 func pathsEqual(left, right string) bool {
@@ -141,4 +171,42 @@ func newClaudeCommand(ctx context.Context, claudePath string, args []string) (*e
 		return nil, errors.New("refusing to execute Claude from a non-absolute path")
 	}
 	return platformClaudeCommand(ctx, claudePath, args)
+}
+
+var requiredClaudeFlags = []string{
+	"--safe-mode",
+	"--no-session-persistence",
+	"--disable-slash-commands",
+	"--no-chrome",
+	"--tools",
+	"--max-turns",
+	"--permission-mode",
+	"--setting-sources",
+	"--strict-mcp-config",
+}
+
+func validateClaudeCapabilities(claudePath, workDir string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	cmd, err := newClaudeCommand(ctx, claudePath, []string{"--help"})
+	if err != nil {
+		return err
+	}
+	cmd.Dir = workDir
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("cannot inspect Claude CLI capabilities: %w", err)
+	}
+	help := string(output)
+	var missing []string
+	for _, flag := range requiredClaudeFlags {
+		if !strings.Contains(help, flag) {
+			missing = append(missing, flag)
+		}
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("Claude CLI is missing required security options: %s", strings.Join(missing, ", "))
+	}
+	return nil
 }
